@@ -31,6 +31,7 @@ const {
   isWsl,
   shouldPatchCoredns,
 } = require("./platform");
+const ollamaContainer = require("./ollama-container");
 const { prompt, ensureApiKey, getCredential } = require("./credentials");
 const registry = require("./registry");
 const nim = require("./nim");
@@ -602,7 +603,8 @@ async function setupNim(sandboxName, gpu) {
   let nimContainer = null;
 
   // Detect local inference options
-  const hasOllama = !!runCapture("command -v ollama", { ignoreError: true });
+  const useOllamaSidecar = isWsl(); // WSL2: use Docker sidecar to avoid eth0/binding issues
+  const hasOllama = !useOllamaSidecar && !!runCapture("command -v ollama", { ignoreError: true });
   const ollamaRunning = !!runCapture("curl -sf http://localhost:11434/api/tags 2>/dev/null", { ignoreError: true });
   const lmstudioRunning = !!runCapture("curl -sf http://localhost:1234/v1/models 2>/dev/null", { ignoreError: true });
   const vllmRunning = !!runCapture("curl -sf http://localhost:8000/v1/models 2>/dev/null", { ignoreError: true });
@@ -619,7 +621,9 @@ async function setupNim(sandboxName, gpu) {
   const preferLocal = EXPERIMENTAL && hasRtxGpu;
 
   // Build status labels for local providers
-  const ollamaStatus = ollamaRunning ? "running" : hasOllama ? "installed" : "will install";
+  const ollamaStatus = useOllamaSidecar
+    ? "Docker sidecar"
+    : ollamaRunning ? "running" : hasOllama ? "installed" : "will install";
   const lmstudioStatus = lmstudioRunning ? "running" : "will install";
 
   // Build options list — always show Ollama and LM Studio when GPU is available
@@ -632,7 +636,9 @@ async function setupNim(sandboxName, gpu) {
     // Local-first: show local providers before cloud
     options.push({
       key: "ollama",
-      label: `Local Ollama (${ollamaStatus})`,
+      label: useOllamaSidecar
+        ? `Ollama (${ollamaStatus}) — no local install needed`
+        : `Local Ollama (${ollamaStatus})`,
     });
     if (process.platform === "linux") {
       options.push({
@@ -649,7 +655,13 @@ async function setupNim(sandboxName, gpu) {
         "NVIDIA Endpoint API (build.nvidia.com)" +
         (!anyLocalRunning && !(EXPERIMENTAL && vllmRunning) ? " (suggested)" : ""),
     });
-    if (hasOllama || ollamaRunning || process.platform === "linux" || process.platform === "darwin") {
+    if (useOllamaSidecar) {
+      // WSL2: Ollama sidecar is always available — no local install needed
+      options.push({
+        key: "ollama",
+        label: `Ollama (${ollamaStatus}) — no local install needed`,
+      });
+    } else if (hasOllama || ollamaRunning || process.platform === "linux" || process.platform === "darwin") {
       options.push({
         key: "ollama",
         label: `Local Ollama (${ollamaStatus})` + (ollamaRunning ? " (suggested)" : ""),
@@ -756,8 +768,34 @@ async function setupNim(sandboxName, gpu) {
           provider = "vllm-local";
         }
       }
+    } else if (selected.key === "ollama" && useOllamaSidecar) {
+      // WSL2: Run Ollama as a Docker sidecar sharing the gateway's network
+      // namespace.  No local install needed — avoids eth0/binding issues.
+      console.log("  Starting Ollama container (sidecar)...");
+      ollamaContainer.startOllamaContainer("default");
+
+      console.log("  Waiting for Ollama to become ready...");
+      if (!ollamaContainer.waitForOllamaHealth("default")) {
+        console.error("  Ollama container did not become healthy within 60s.");
+        console.error("  Check: docker logs nemoclaw-ollama-default");
+        process.exit(1);
+      }
+      console.log("  ✓ Ollama container running (shared network with gateway)");
+
+      provider = "ollama-k3s";
+      if (isNonInteractive()) {
+        model = requestedModel || (gpu ? getRecommendedOllamaModel(gpu.perGpuMB).model : getDefaultOllamaModel(runCapture));
+      } else {
+        model = await promptOllamaModel(gpu);
+      }
+
+      // Pull the model inside the sidecar container
+      if (!ollamaContainer.hasModel("default", model)) {
+        console.log(`  Pulling Ollama model inside container: ${model} (this may take a few minutes)...`);
+        ollamaContainer.pullModel("default", model);
+      }
     } else if (selected.key === "ollama") {
-      // Install Ollama first if not present, then start
+      // macOS / native Linux: host-side Ollama install + start
       if (!hasOllama) {
         if (process.platform === "darwin") {
           console.log("  Installing Ollama via Homebrew...");
@@ -772,23 +810,6 @@ async function setupNim(sandboxName, gpu) {
         console.log("  Starting Ollama...");
         run("OLLAMA_HOST=0.0.0.0:11434 ollama serve > /dev/null 2>&1 &", { ignoreError: true });
         sleep(2);
-      }
-      // On WSL2, auto-fix if Ollama is bound to 127.0.0.1
-      if (isWsl() && !isOllamaBoundToAllInterfaces(runCapture)) {
-        const hasSystemdOllama = !!runCapture("systemctl list-unit-files ollama.service 2>/dev/null | grep ollama", { ignoreError: true });
-        if (hasSystemdOllama) {
-          console.log("  Ollama is bound to 127.0.0.1 — fixing for container access...");
-          runInteractive(
-            'sudo mkdir -p /etc/systemd/system/ollama.service.d && ' +
-            'echo -e \'[Service]\\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\' | sudo tee /etc/systemd/system/ollama.service.d/override.conf && ' +
-            'sudo systemctl daemon-reload && sudo systemctl restart ollama',
-            { ignoreError: false }
-          );
-          sleep(3);
-        } else {
-          console.log("  Ollama is bound to 127.0.0.1 — containers won't be able to reach it.");
-          console.log("  Restart Ollama with: OLLAMA_HOST=0.0.0.0:11434 ollama serve");
-        }
       }
       console.log("  ✓ Using Ollama on localhost:11434");
       provider = "ollama-local";
@@ -978,6 +999,30 @@ async function setupInference(sandboxName, model, provider) {
     }
     // Keep the model loaded in VRAM after the probe
     run(getOllamaWarmupCommand(model), { ignoreError: true });
+  } else if (provider === "ollama-k3s") {
+    // Ollama runs as a Docker sidecar sharing the gateway's network namespace.
+    // No host-networking validation needed — localhost:11434 is in-process.
+    const baseUrl = getLocalProviderBaseUrl(provider);
+    run(
+      `openshell provider create --name ollama-k3s --type openai ` +
+      `--credential "OPENAI_API_KEY=ollama" ` +
+      `--config "OPENAI_BASE_URL=${baseUrl}" 2>&1 || ` +
+      `openshell provider update ollama-k3s --credential "OPENAI_API_KEY=ollama" ` +
+      `--config "OPENAI_BASE_URL=${baseUrl}" 2>&1 || true`,
+      { ignoreError: true }
+    );
+    run(
+      `openshell inference set --no-verify --provider ollama-k3s --model ${shellQuote(model)} 2>/dev/null || true`,
+      { ignoreError: true }
+    );
+    console.log(`  Priming Ollama model: ${model}`);
+    const probe = ollamaContainer.validateModel("default", model);
+    if (!probe.ok) {
+      console.error(`  ${probe.message}`);
+      process.exit(1);
+    }
+    // Keep the model loaded in VRAM
+    ollamaContainer.warmupModel("default", model);
   } else if (provider === "lmstudio-local") {
     const validation = validateLocalProvider(provider, runCapture);
     if (!validation.ok) {
@@ -1144,6 +1189,7 @@ function printDashboard(sandboxName, model, provider) {
   if (provider === "nvidia-nim") providerLabel = "NVIDIA Endpoint API";
   else if (provider === "vllm-local") providerLabel = "Local vLLM";
   else if (provider === "ollama-local") providerLabel = "Local Ollama";
+  else if (provider === "ollama-k3s") providerLabel = "Ollama (container sidecar)";
   else if (provider === "lmstudio-local") providerLabel = "Local LM Studio";
 
   console.log("");

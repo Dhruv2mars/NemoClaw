@@ -38,6 +38,11 @@ function getHostUrl() {
 // ── Provider URL routing ────────────────────────────────────────
 
 function getLocalProviderBaseUrl(provider) {
+  // ollama-k3s runs as a Docker sidecar sharing the gateway's network
+  // namespace — reachable at localhost from the gateway and k3s pods.
+  if (provider === "ollama-k3s") {
+    return "http://127.0.0.1:11434/v1";
+  }
   const hostUrl = getHostUrl();
   switch (provider) {
     case "vllm-local":
@@ -84,6 +89,12 @@ function getLocalProviderContainerReachabilityCheck(provider) {
 }
 
 function validateLocalProvider(provider, runCapture) {
+  // ollama-k3s is a Docker sidecar — health is verified separately via
+  // ollama-container.js, no host-networking validation needed.
+  if (provider === "ollama-k3s") {
+    return { ok: true };
+  }
+
   const command = getLocalProviderHealthCheck(provider);
   if (!command) {
     return { ok: true };

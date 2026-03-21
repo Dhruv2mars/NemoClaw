@@ -240,6 +240,34 @@ describe("Ollama binding check", () => {
   });
 });
 
+describe("ollama-k3s sidecar provider", () => {
+  it("returns localhost base URL for ollama-k3s", () => {
+    assert.equal(
+      getLocalProviderBaseUrl("ollama-k3s"),
+      "http://127.0.0.1:11434/v1",
+    );
+  });
+
+  it("ollama-k3s base URL does not depend on host URL or WSL2 IP", () => {
+    // The sidecar shares the gateway's network namespace, so it is
+    // always reachable at 127.0.0.1 regardless of platform.
+    const url = getLocalProviderBaseUrl("ollama-k3s");
+    assert.ok(!url.includes("host.docker.internal"));
+    assert.ok(!url.includes("host.openshell.internal"));
+  });
+
+  it("validateLocalProvider skips host-networking checks for ollama-k3s", () => {
+    // Should pass without calling runCapture at all
+    let called = false;
+    const result = validateLocalProvider("ollama-k3s", () => {
+      called = true;
+      return "";
+    });
+    assert.deepEqual(result, { ok: true });
+    assert.equal(called, false);
+  });
+});
+
 describe("VRAM-aware model recommendation", () => {
   it("recommends nemotron-3-nano:30b for 24+ GB VRAM", () => {
     const rec = getRecommendedOllamaModel(24564); // RTX 4090 reports 24564 MB
