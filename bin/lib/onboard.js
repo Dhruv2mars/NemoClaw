@@ -602,7 +602,7 @@ async function setupNim(sandboxName, gpu) {
   // Configurable via NEMOCLAW_LOCAL_VRAM_THRESHOLD_MB.
   const localVramThreshold = parseInt(process.env.NEMOCLAW_LOCAL_VRAM_THRESHOLD_MB || "9600", 10);
   const hasRtxGpu = gpu && gpu.type === "nvidia" && gpu.perGpuMB >= localVramThreshold;
-  const preferLocal = hasRtxGpu;
+  const preferLocal = EXPERIMENTAL && hasRtxGpu;
 
   // Build status labels for local providers
   const ollamaStatus = ollamaRunning ? "running" : hasOllama ? "installed" : "will install";
@@ -618,7 +618,7 @@ async function setupNim(sandboxName, gpu) {
     // Local-first: show local providers before cloud
     options.push({
       key: "ollama",
-      label: `Local Ollama (${ollamaStatus})${ollamaRunning ? " (suggested for RTX)" : ""}`,
+      label: `Local Ollama (${ollamaStatus})`,
     });
     if (process.platform === "linux") {
       options.push({
