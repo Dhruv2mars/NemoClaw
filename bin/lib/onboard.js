@@ -6,7 +6,6 @@
 // NEMOCLAW_NON_INTERACTIVE=1 env var for CI/CD pipelines.
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { ROOT, SCRIPTS, run, runCapture, runInteractive } = require("./runner");
 const {
@@ -22,6 +21,8 @@ const {
 const {
   CLOUD_MODEL_OPTIONS,
   DEFAULT_CLOUD_MODEL,
+  DEFAULT_OLLAMA_MODEL,
+  getOpenClawPrimaryModel,
   getProviderSelectionConfig,
 } = require("./inference-config");
 const {
@@ -104,25 +105,31 @@ function getStableGatewayImageRef(versionOutput = null) {
   return `ghcr.io/nvidia/openshell/cluster:${version}`;
 }
 
+function pythonLiteralJson(value) {
+  return JSON.stringify(JSON.stringify(value));
+}
+
 function buildSandboxConfigSyncScript(selectionConfig) {
-  // openclaw.json is immutable (root:root 444, Landlock read-only) — never
-  // write to it at runtime.  Model routing is handled by the host-side
-  // gateway (`openshell inference set` in Step 5), not from inside the
-  // sandbox.  We only write the NemoClaw selection config (~/.nemoclaw/).
+  const providerType = selectionConfig.provider || (
+    selectionConfig.profile === "inference-local"
+      ? selectionConfig.endpointType === "vllm"
+        ? "vllm-local"
+        : "nvidia-nim"
+      : "nvidia-nim"
+  );
+  const primaryModel = getOpenClawPrimaryModel(providerType, selectionConfig.model);
+  // openclaw.json is locked (root:444) at runtime — the model config is baked
+  // into the Dockerfile via NEMOCLAW_MODEL build arg. We only write our own
+  // nemoclaw config here.
   return `
 set -euo pipefail
 mkdir -p ~/.nemoclaw
 cat > ~/.nemoclaw/config.json <<'EOF_NEMOCLAW_CFG'
 ${JSON.stringify(selectionConfig, null, 2)}
 EOF_NEMOCLAW_CFG
+openclaw models set ${shellQuote(primaryModel)} > /dev/null 2>&1 || true
 exit
 `.trim();
-}
-
-function writeSandboxConfigSyncFile(script, tmpDir = os.tmpdir(), now = Date.now()) {
-  const scriptFile = path.join(tmpDir, `nemoclaw-sync-${now}.sh`);
-  fs.writeFileSync(scriptFile, `${script}\n`, { mode: 0o600 });
-  return scriptFile;
 }
 
 async function promptCloudModel() {
@@ -443,7 +450,7 @@ async function startGateway(gpu) {
 
 // ── Step 3: Sandbox ──────────────────────────────────────────────
 
-async function createSandbox(gpu) {
+async function createSandbox(gpu, model) {
   step(3, 7, "Creating sandbox");
 
   const nameAnswer = await promptOrDefault(
@@ -487,7 +494,14 @@ async function createSandbox(gpu) {
   const { mkdtempSync } = require("fs");
   const os = require("os");
   const buildCtx = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-build-"));
-  fs.copyFileSync(path.join(ROOT, "Dockerfile"), path.join(buildCtx, "Dockerfile"));
+  let dockerfile = fs.readFileSync(path.join(ROOT, "Dockerfile"), "utf-8");
+  if (model) {
+    dockerfile = dockerfile.replace(
+      /^ARG NEMOCLAW_MODEL=.+$/m,
+      `ARG NEMOCLAW_MODEL=${model}`,
+    );
+  }
+  fs.writeFileSync(path.join(buildCtx, "Dockerfile"), dockerfile);
   run(`cp -r "${path.join(ROOT, "nemoclaw")}" "${buildCtx}/nemoclaw"`);
   run(`cp -r "${path.join(ROOT, "nemoclaw-blueprint")}" "${buildCtx}/nemoclaw-blueprint"`);
   run(`cp -r "${path.join(ROOT, "scripts")}" "${buildCtx}/scripts"`);
@@ -893,9 +907,11 @@ async function setupNim(sandboxName, gpu) {
     console.log(`  Using NVIDIA Endpoint API with model: ${model}`);
   }
 
-  registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+  if (sandboxName) {
+    registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+  }
 
-  return { model, provider };
+  return { model, provider, nimContainer };
 }
 
 // ── Step 5: Inference provider ───────────────────────────────────
@@ -999,14 +1015,9 @@ async function setupOpenclaw(sandboxName, model, provider) {
       onboardedAt: new Date().toISOString(),
     };
     const script = buildSandboxConfigSyncScript(sandboxConfig);
-    const scriptFile = writeSandboxConfigSyncFile(script);
-    try {
-      run(`openshell sandbox connect "${sandboxName}" < ${shellQuote(scriptFile)}`, {
-        stdio: ["ignore", "ignore", "inherit"],
-      });
-    } finally {
-      fs.unlinkSync(scriptFile);
-    }
+    run(`cat <<'EOF_NEMOCLAW_SYNC' | openshell sandbox connect "${sandboxName}"
+${script}
+EOF_NEMOCLAW_SYNC`, { stdio: ["ignore", "ignore", "inherit"] });
   }
 
   console.log("  ✓ OpenClaw gateway launched inside sandbox");
@@ -1161,8 +1172,9 @@ async function onboard(opts = {}) {
 
   const gpu = await preflight();
   await startGateway(gpu);
-  const sandboxName = await createSandbox(gpu);
-  const { model, provider } = await setupNim(sandboxName, gpu);
+  const { model, provider, nimContainer } = await setupNim(null, gpu);
+  const sandboxName = await createSandbox(gpu, model);
+  registry.updateSandbox(sandboxName, { model, provider, nimContainer });
   await setupInference(sandboxName, model, provider);
   await setupOpenclaw(sandboxName, model, provider);
   await setupPolicies(sandboxName);
@@ -1177,5 +1189,4 @@ module.exports = {
   isSandboxReady,
   onboard,
   setupNim,
-  writeSandboxConfigSyncFile,
 };
