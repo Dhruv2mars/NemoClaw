@@ -50,7 +50,9 @@ function startOllamaContainer(sandboxName) {
   const gpuFlag = hasGpu ? "--gpus all" : "";
 
   run(
-    `docker run -d ${gpuFlag} --network container:${gateway} --name ${name} ${OLLAMA_IMAGE}`,
+    `docker run -d ${gpuFlag} --network container:${gateway} ` +
+    `-v nemoclaw-ollama-models:/root/.ollama ` +
+    `--name ${name} ${OLLAMA_IMAGE}`,
     { ignoreError: false }
   );
 

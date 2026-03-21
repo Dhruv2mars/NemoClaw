@@ -89,4 +89,24 @@ describe("inference selection config", () => {
       `${MANAGED_PROVIDER_ID}/${DEFAULT_OLLAMA_MODEL}`,
     );
   });
+
+  it("maps lmstudio-k3s to the sandbox inference route with sidecar label", () => {
+    assert.deepEqual(getProviderSelectionConfig("lmstudio-k3s"), {
+      endpointType: "custom",
+      endpointUrl: INFERENCE_ROUTE_URL,
+      ncpPartner: null,
+      model: DEFAULT_OLLAMA_MODEL,
+      profile: DEFAULT_ROUTE_PROFILE,
+      credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
+      provider: "lmstudio-k3s",
+      providerLabel: "LM Studio (container sidecar)",
+    });
+  });
+
+  it("uses default model for lmstudio-k3s when no model specified", () => {
+    assert.equal(
+      getOpenClawPrimaryModel("lmstudio-k3s"),
+      `${MANAGED_PROVIDER_ID}/${DEFAULT_OLLAMA_MODEL}`,
+    );
+  });
 });

@@ -32,6 +32,8 @@ const {
   shouldPatchCoredns,
 } = require("./platform");
 const ollamaContainer = require("./ollama-container");
+const { getSidecar, isSidecarProvider, getSidecarModelTiers, getRecommendedSidecarModel } = require("./sidecar");
+const { spawn } = require("child_process");
 const { prompt, ensureApiKey, getCredential } = require("./credentials");
 const registry = require("./registry");
 const nim = require("./nim");
@@ -179,6 +181,43 @@ async function promptOllamaModel(gpu) {
   // Find default index (recommended model or first option)
   const rec = gpu ? getRecommendedOllamaModel(gpu.perGpuMB) : null;
   const defaultModel = rec ? rec.model : getDefaultOllamaModel(runCapture);
+  const defaultIndex = Math.max(0, options.findIndex((o) => o.model === defaultModel));
+
+  console.log("");
+  console.log("  Available models:");
+  options.forEach((o, i) => {
+    console.log(`    ${i + 1}) ${o.label}`);
+  });
+  console.log("");
+
+  const choice = await prompt(`  Choose model [${defaultIndex + 1}]: `);
+  const index = parseInt(choice || String(defaultIndex + 1), 10) - 1;
+  return (options[index] || options[defaultIndex] || { model: defaultModel }).model;
+}
+
+async function promptSidecarModel(gpu, providerKey) {
+  const tiers = getSidecarModelTiers(providerKey);
+  const sidecar = getSidecar(providerKey);
+
+  const options = [];
+  const seen = new Set();
+
+  // Add VRAM tier models
+  if (gpu && gpu.perGpuMB && tiers.length > 0) {
+    for (const tier of tiers) {
+      const pulled = sidecar.hasModel("default", tier.model);
+      const status = pulled ? "" : " [will download]";
+      options.push({ model: tier.model, label: `${tier.label}${status}` });
+      seen.add(tier.model);
+    }
+  }
+
+  if (options.length === 0 && tiers.length > 0) {
+    return tiers[tiers.length - 1].model; // smallest fallback
+  }
+
+  const rec = getRecommendedSidecarModel(providerKey, gpu ? gpu.perGpuMB : 0);
+  const defaultModel = rec ? rec.model : tiers[tiers.length - 1].model;
   const defaultIndex = Math.max(0, options.findIndex((o) => o.model === defaultModel));
 
   console.log("");
@@ -601,10 +640,11 @@ async function setupNim(sandboxName, gpu) {
   let model = null;
   let provider = "nvidia-nim";
   let nimContainer = null;
+  let pullProc = null;
 
   // Detect local inference options
-  const useOllamaSidecar = isWsl(); // WSL2: use Docker sidecar to avoid eth0/binding issues
-  const hasOllama = !useOllamaSidecar && !!runCapture("command -v ollama", { ignoreError: true });
+  const useSidecar = process.platform === "linux"; // Linux: Docker sidecar avoids host-networking issues
+  const hasOllama = !useSidecar && !!runCapture("command -v ollama", { ignoreError: true });
   const ollamaRunning = !!runCapture("curl -sf http://localhost:11434/api/tags 2>/dev/null", { ignoreError: true });
   const lmstudioRunning = !!runCapture("curl -sf http://localhost:1234/v1/models 2>/dev/null", { ignoreError: true });
   const vllmRunning = !!runCapture("curl -sf http://localhost:8000/v1/models 2>/dev/null", { ignoreError: true });
@@ -621,7 +661,7 @@ async function setupNim(sandboxName, gpu) {
   const preferLocal = EXPERIMENTAL && hasRtxGpu;
 
   // Build status labels for local providers
-  const ollamaStatus = useOllamaSidecar
+  const ollamaStatus = useSidecar
     ? "Docker sidecar"
     : ollamaRunning ? "running" : hasOllama ? "installed" : "will install";
   const lmstudioStatus = lmstudioRunning ? "running" : "will install";
@@ -634,17 +674,17 @@ async function setupNim(sandboxName, gpu) {
 
   if (preferLocal) {
     // Local-first: show local providers before cloud
-    options.push({
-      key: "ollama",
-      label: useOllamaSidecar
-        ? `Ollama (${ollamaStatus}) — no local install needed`
-        : `Local Ollama (${ollamaStatus})`,
-    });
-    if (process.platform === "linux" && !useOllamaSidecar) {
+    if (useSidecar) {
+      options.push({ key: "ollama-sidecar", label: "Ollama (Docker sidecar) — no install needed" });
+      options.push({ key: "lmstudio-sidecar", label: "LM Studio (Docker sidecar) — no install needed" });
+    } else {
       options.push({
-        key: "lmstudio",
-        label: `Local LM Studio (${lmstudioStatus})`,
+        key: "ollama",
+        label: `Local Ollama (${ollamaStatus})`,
       });
+      if (process.platform === "linux") {
+        options.push({ key: "lmstudio", label: `Local LM Studio (${lmstudioStatus})` });
+      }
     }
     options.push({ key: "cloud", label: "NVIDIA Endpoint API (build.nvidia.com)" });
   } else {
@@ -655,23 +695,19 @@ async function setupNim(sandboxName, gpu) {
         "NVIDIA Endpoint API (build.nvidia.com)" +
         (!anyLocalRunning && !(EXPERIMENTAL && vllmRunning) ? " (suggested)" : ""),
     });
-    if (useOllamaSidecar) {
-      // WSL2: Ollama sidecar is always available — no local install needed
-      options.push({
-        key: "ollama",
-        label: `Ollama (${ollamaStatus}) — no local install needed`,
-      });
-    } else if (hasOllama || ollamaRunning || process.platform === "linux" || process.platform === "darwin") {
-      options.push({
-        key: "ollama",
-        label: `Local Ollama (${ollamaStatus})` + (ollamaRunning ? " (suggested)" : ""),
-      });
-    }
-    if (lmstudioRunning && !useOllamaSidecar) {
-      options.push({
-        key: "lmstudio",
-        label: "Local LM Studio — running (suggested)",
-      });
+    if (useSidecar) {
+      options.push({ key: "ollama-sidecar", label: "Ollama (Docker sidecar) — no install needed" });
+      options.push({ key: "lmstudio-sidecar", label: "LM Studio (Docker sidecar) — no install needed" });
+    } else {
+      if (hasOllama || ollamaRunning || process.platform === "linux" || process.platform === "darwin") {
+        options.push({
+          key: "ollama",
+          label: `Local Ollama (${ollamaStatus})` + (ollamaRunning ? " (suggested)" : ""),
+        });
+      }
+      if (lmstudioRunning) {
+        options.push({ key: "lmstudio", label: "Local LM Studio — running (suggested)" });
+      }
     }
   }
   if (EXPERIMENTAL && vllmRunning) {
@@ -685,9 +721,13 @@ async function setupNim(sandboxName, gpu) {
     let selected;
 
     if (isNonInteractive()) {
-      // When preferLocal, default to ollama (install if needed)
-      const defaultProvider = preferLocal ? "ollama" : "cloud";
-      const providerKey = requestedProvider || defaultProvider;
+      const defaultProvider = preferLocal
+        ? (useSidecar ? "ollama-sidecar" : "ollama")
+        : "cloud";
+      // Map env var names to option keys (e.g., "ollama" → "ollama-sidecar" on Linux)
+      let providerKey = requestedProvider || defaultProvider;
+      if (useSidecar && providerKey === "ollama") providerKey = "ollama-sidecar";
+      if (useSidecar && providerKey === "lmstudio") providerKey = "lmstudio-sidecar";
       selected = options.find((o) => o.key === providerKey);
       if (!selected) {
         console.error(`  Requested provider '${providerKey}' is not available in this environment.`);
@@ -768,31 +808,36 @@ async function setupNim(sandboxName, gpu) {
           provider = "vllm-local";
         }
       }
-    } else if (selected.key === "ollama" && useOllamaSidecar) {
-      // WSL2: Run Ollama as a Docker sidecar sharing the gateway's network
-      // namespace.  No local install needed — avoids eth0/binding issues.
-      console.log("  Starting Ollama container (sidecar)...");
-      ollamaContainer.startOllamaContainer("default");
+    } else if (selected.key === "ollama-sidecar" || selected.key === "lmstudio-sidecar") {
+      // Docker sidecar — runs inference container sharing the gateway's network namespace.
+      const providerKey = selected.key === "ollama-sidecar" ? "ollama-k3s" : "lmstudio-k3s";
+      const sidecar = getSidecar(providerKey);
 
-      console.log("  Waiting for Ollama to become ready...");
-      if (!ollamaContainer.waitForOllamaHealth("default")) {
-        console.error("  Ollama container did not become healthy within 60s.");
-        console.error("  Check: docker logs nemoclaw-ollama-default");
+      console.log(`  Starting ${sidecar.label} container (sidecar)...`);
+      sidecar.start("default");
+
+      console.log(`  Waiting for ${sidecar.label} to become ready...`);
+      if (!sidecar.waitForHealth("default")) {
+        console.error(`  ${sidecar.label} container did not become healthy.`);
+        console.error(`  Check: docker logs ${sidecar.containerName("default")}`);
         process.exit(1);
       }
-      console.log("  ✓ Ollama container running (shared network with gateway)");
+      console.log(`  ✓ ${sidecar.label} container running (shared network with gateway)`);
 
-      provider = "ollama-k3s";
+      provider = providerKey;
       if (isNonInteractive()) {
-        model = requestedModel || (gpu ? getRecommendedOllamaModel(gpu.perGpuMB).model : getDefaultOllamaModel(runCapture));
+        const rec = getRecommendedSidecarModel(providerKey, gpu ? gpu.perGpuMB : 0);
+        model = requestedModel || (rec ? rec.model : getSidecarModelTiers(providerKey).pop().model);
       } else {
-        model = await promptOllamaModel(gpu);
+        model = await promptSidecarModel(gpu, providerKey);
       }
 
-      // Pull the model inside the sidecar container
-      if (!ollamaContainer.hasModel("default", model)) {
-        console.log(`  Pulling Ollama model inside container: ${model} (this may take a few minutes)...`);
-        ollamaContainer.pullModel("default", model);
+      // Kick off model download in background (parallel with sandbox creation)
+      if (!sidecar.hasModel("default", model)) {
+        const pullArgs = sidecar.getPullArgs(sidecar.containerName("default"), model);
+        pullProc = spawn(pullArgs[0], pullArgs.slice(1), { detached: true, stdio: "ignore" });
+        pullProc.unref();
+        console.log(`  Model download started in background: ${model}`);
       }
     } else if (selected.key === "ollama") {
       // macOS / native Linux: host-side Ollama install + start
@@ -932,7 +977,7 @@ async function setupNim(sandboxName, gpu) {
     registry.updateSandbox(sandboxName, { model, provider, nimContainer });
   }
 
-  return { model, provider, nimContainer };
+  return { model, provider, nimContainer, pullProc };
 }
 
 // ── Step 5: Inference provider ───────────────────────────────────
@@ -942,6 +987,7 @@ async function setupInference(sandboxName, model, provider) {
   if (provider === "nvidia-nim") providerDesc = "NVIDIA Endpoint API";
   else if (provider === "ollama-local") providerDesc = "Ollama (host)";
   else if (provider === "ollama-k3s") providerDesc = "Ollama (sidecar)";
+  else if (provider === "lmstudio-k3s") providerDesc = "LM Studio (sidecar)";
   else if (provider === "vllm-local") providerDesc = "vLLM";
   else if (provider === "lmstudio-local") providerDesc = "LM Studio";
   step(5, 7, `Setting up inference — ${providerDesc} / ${model}`);
@@ -1005,30 +1051,33 @@ async function setupInference(sandboxName, model, provider) {
     }
     // Keep the model loaded in VRAM after the probe
     run(getOllamaWarmupCommand(model), { ignoreError: true });
-  } else if (provider === "ollama-k3s") {
-    // Ollama runs as a Docker sidecar sharing the gateway's network namespace.
-    // No host-networking validation needed — localhost:11434 is in-process.
+  } else if (isSidecarProvider(provider)) {
+    // Docker sidecar — unified handler for ollama-k3s and lmstudio-k3s.
+    const sidecar = getSidecar(provider);
+    const name = sidecar.getProviderName();
+    const cred = sidecar.getCredential();
     const baseUrl = getLocalProviderBaseUrl(provider);
     run(
-      `openshell provider create --name ollama-k3s --type openai ` +
-      `--credential "OPENAI_API_KEY=ollama" ` +
+      `openshell provider create --name ${name} --type openai ` +
+      `--credential "OPENAI_API_KEY=${cred}" ` +
       `--config "OPENAI_BASE_URL=${baseUrl}" 2>&1 || ` +
-      `openshell provider update ollama-k3s --credential "OPENAI_API_KEY=ollama" ` +
+      `openshell provider update ${name} --credential "OPENAI_API_KEY=${cred}" ` +
       `--config "OPENAI_BASE_URL=${baseUrl}" 2>&1 || true`,
       { ignoreError: true }
     );
     run(
-      `openshell inference set --no-verify --provider ollama-k3s --model ${shellQuote(model)} 2>/dev/null || true`,
+      `openshell inference set --no-verify --provider ${name} --model ${shellQuote(model)} 2>/dev/null || true`,
       { ignoreError: true }
     );
-    console.log(`  Priming Ollama model: ${model}`);
-    const probe = ollamaContainer.validateModel("default", model);
+    // Load model into GPU (noop for Ollama, required for LM Studio)
+    sidecar.loadModel("default", model);
+    console.log(`  Priming model: ${model}`);
+    const probe = sidecar.validateModel("default", model);
     if (!probe.ok) {
       console.error(`  ${probe.message}`);
       process.exit(1);
     }
-    // Keep the model loaded in VRAM
-    ollamaContainer.warmupModel("default", model);
+    sidecar.warmupModel("default", model);
   } else if (provider === "lmstudio-local") {
     const validation = validateLocalProvider(provider, runCapture);
     if (!validation.ok) {
@@ -1196,6 +1245,7 @@ function printDashboard(sandboxName, model, provider) {
   else if (provider === "vllm-local") providerLabel = "Local vLLM";
   else if (provider === "ollama-local") providerLabel = "Local Ollama";
   else if (provider === "ollama-k3s") providerLabel = "Ollama (container sidecar)";
+  else if (provider === "lmstudio-k3s") providerLabel = "LM Studio (container sidecar)";
   else if (provider === "lmstudio-local") providerLabel = "Local LM Studio";
 
   console.log("");
@@ -1214,6 +1264,30 @@ function printDashboard(sandboxName, model, provider) {
 
 // ── Main ─────────────────────────────────────────────────────────
 
+function awaitModelPull(providerKey, model) {
+  if (!isSidecarProvider(providerKey)) return;
+  const sidecar = getSidecar(providerKey);
+
+  if (sidecar.hasModel("default", model)) {
+    console.log(`  ✓ Model ${model} ready`);
+    return;
+  }
+
+  console.log(`  Waiting for model download to finish: ${model}...`);
+  const start = Date.now();
+  const timeout = 600; // 10 minutes
+  while ((Date.now() - start) / 1000 < timeout) {
+    if (sidecar.hasModel("default", model)) {
+      console.log(`  ✓ Model ${model} downloaded`);
+      return;
+    }
+    require("child_process").spawnSync("sleep", ["5"]);
+  }
+  console.error(`  Model download did not complete within ${timeout}s.`);
+  console.error(`  Check: docker logs ${sidecar.containerName("default")}`);
+  process.exit(1);
+}
+
 async function onboard(opts = {}) {
   NON_INTERACTIVE = opts.nonInteractive || process.env.NEMOCLAW_NON_INTERACTIVE === "1";
 
@@ -1224,9 +1298,10 @@ async function onboard(opts = {}) {
 
   const gpu = await preflight();
   await startGateway(gpu);
-  const { model, provider, nimContainer } = await setupNim(null, gpu);
+  const { model, provider, nimContainer, pullProc } = await setupNim(null, gpu);
   const sandboxName = await createSandbox(gpu, model);
   registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+  awaitModelPull(provider, model);
   await setupInference(sandboxName, model, provider);
   await setupOpenclaw(sandboxName, model, provider);
   await setupPolicies(sandboxName);

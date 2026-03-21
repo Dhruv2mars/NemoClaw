@@ -268,6 +268,31 @@ describe("ollama-k3s sidecar provider", () => {
   });
 });
 
+describe("lmstudio-k3s sidecar provider", () => {
+  it("returns localhost base URL for lmstudio-k3s", () => {
+    assert.equal(
+      getLocalProviderBaseUrl("lmstudio-k3s"),
+      "http://127.0.0.1:1234/v1",
+    );
+  });
+
+  it("lmstudio-k3s base URL does not depend on host URL", () => {
+    const url = getLocalProviderBaseUrl("lmstudio-k3s");
+    assert.ok(!url.includes("host.docker.internal"));
+    assert.ok(!url.includes("host.openshell.internal"));
+  });
+
+  it("validateLocalProvider skips host-networking checks for lmstudio-k3s", () => {
+    let called = false;
+    const result = validateLocalProvider("lmstudio-k3s", () => {
+      called = true;
+      return "";
+    });
+    assert.deepEqual(result, { ok: true });
+    assert.equal(called, false);
+  });
+});
+
 describe("VRAM-aware model recommendation", () => {
   it("recommends nemotron-3-nano:30b for 24+ GB VRAM", () => {
     const rec = getRecommendedOllamaModel(24564); // RTX 4090 reports 24564 MB
