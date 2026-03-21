@@ -66,11 +66,12 @@ function waitForOllamaHealth(sandboxName, timeout = 60) {
   const start = Date.now();
 
   while ((Date.now() - start) / 1000 < timeout) {
+    // Use `ollama list` as health check — the ollama/ollama image has no curl/wget.
     const result = runCapture(
-      `docker exec ${name} curl -sf http://localhost:11434/api/tags 2>/dev/null`,
+      `docker exec ${name} ollama list 2>/dev/null`,
       { ignoreError: true }
     );
-    if (result) return true;
+    if (result !== undefined && result !== null && result !== "") return true;
     require("child_process").spawnSync("sleep", ["2"]);
   }
   return false;
@@ -101,14 +102,10 @@ function hasModel(sandboxName, model) {
  */
 function warmupModel(sandboxName, model, keepAlive = "15m") {
   const name = containerName(sandboxName);
-  const payload = JSON.stringify({
-    model,
-    prompt: "hello",
-    stream: false,
-    keep_alive: keepAlive,
-  });
+  // Use `ollama run` to send a short prompt — keeps the model loaded in VRAM.
+  // The ollama/ollama image has no curl/wget, so we use the native CLI.
   run(
-    `docker exec ${name} curl -s http://localhost:11434/api/generate -H 'Content-Type: application/json' -d '${payload.replace(/'/g, "'\\''")}' > /dev/null 2>&1`,
+    `docker exec ${name} ollama run ${model} "hello" --keepalive ${keepAlive} > /dev/null 2>&1`,
     { ignoreError: true }
   );
 }
@@ -118,14 +115,10 @@ function warmupModel(sandboxName, model, keepAlive = "15m") {
  */
 function validateModel(sandboxName, model, timeoutSeconds = 120) {
   const name = containerName(sandboxName);
-  const payload = JSON.stringify({
-    model,
-    prompt: "hello",
-    stream: false,
-    keep_alive: "15m",
-  });
+  // Use `ollama run` with a short prompt as the probe — the image has no curl/wget.
+  // Timeout via the container exec; ollama run streams output so any response = healthy.
   const output = runCapture(
-    `docker exec ${name} curl -sS --max-time ${timeoutSeconds} http://localhost:11434/api/generate -H 'Content-Type: application/json' -d '${payload.replace(/'/g, "'\\''")}' 2>/dev/null`,
+    `timeout ${timeoutSeconds} docker exec ${name} ollama run ${model} "hello" --keepalive 15m 2>&1`,
     { ignoreError: true }
   );
   if (!output) {
@@ -136,12 +129,11 @@ function validateModel(sandboxName, model, timeoutSeconds = 120) {
         "It may still be loading, too large for the GPU, or otherwise unhealthy.",
     };
   }
-  try {
-    const parsed = JSON.parse(output);
-    if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
-      return { ok: false, message: `Ollama model '${model}' probe failed: ${parsed.error.trim()}` };
-    }
-  } catch {}
+  // Check for error messages in output
+  if (output.includes("Error:") || output.includes("error:")) {
+    const errorLine = output.split("\n").find((l) => /[Ee]rror/.test(l)) || output.slice(0, 200);
+    return { ok: false, message: `Ollama model '${model}' probe failed: ${errorLine.trim()}` };
+  }
   return { ok: true };
 }
 

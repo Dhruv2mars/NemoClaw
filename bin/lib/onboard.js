@@ -596,7 +596,7 @@ async function createSandbox(gpu, model) {
 // ── Step 4: NIM ──────────────────────────────────────────────────
 
 async function setupNim(sandboxName, gpu) {
-  step(4, 7, "Configuring inference (NIM)");
+  step(4, 7, "Configuring inference");
 
   let model = null;
   let provider = "nvidia-nim";
