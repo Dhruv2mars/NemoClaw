@@ -596,7 +596,7 @@ async function createSandbox(gpu, model) {
 // ── Step 4: NIM ──────────────────────────────────────────────────
 
 async function setupNim(sandboxName, gpu) {
-  step(4, 7, "Configuring inference");
+  step(4, 7, "Selecting inference provider");
 
   let model = null;
   let provider = "nvidia-nim";
@@ -938,7 +938,13 @@ async function setupNim(sandboxName, gpu) {
 // ── Step 5: Inference provider ───────────────────────────────────
 
 async function setupInference(sandboxName, model, provider) {
-  step(5, 7, "Setting up inference provider");
+  let providerDesc = provider;
+  if (provider === "nvidia-nim") providerDesc = "NVIDIA Endpoint API";
+  else if (provider === "ollama-local") providerDesc = "Ollama (host)";
+  else if (provider === "ollama-k3s") providerDesc = "Ollama (sidecar)";
+  else if (provider === "vllm-local") providerDesc = "vLLM";
+  else if (provider === "lmstudio-local") providerDesc = "LM Studio";
+  step(5, 7, `Setting up inference — ${providerDesc} / ${model}`);
 
   if (provider === "nvidia-nim") {
     // Create nvidia-nim provider
