@@ -640,7 +640,7 @@ async function setupNim(sandboxName, gpu) {
         ? `Ollama (${ollamaStatus}) — no local install needed`
         : `Local Ollama (${ollamaStatus})`,
     });
-    if (process.platform === "linux") {
+    if (process.platform === "linux" && !useOllamaSidecar) {
       options.push({
         key: "lmstudio",
         label: `Local LM Studio (${lmstudioStatus})`,
@@ -667,7 +667,7 @@ async function setupNim(sandboxName, gpu) {
         label: `Local Ollama (${ollamaStatus})` + (ollamaRunning ? " (suggested)" : ""),
       });
     }
-    if (lmstudioRunning) {
+    if (lmstudioRunning && !useOllamaSidecar) {
       options.push({
         key: "lmstudio",
         label: "Local LM Studio — running (suggested)",
