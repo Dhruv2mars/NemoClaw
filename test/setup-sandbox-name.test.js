@@ -62,6 +62,13 @@ describe("setup.sh sandbox name parameterization (#197)", () => {
     );
   });
 
+  it("copies the OpenClaw config helper into the staged Docker build context", () => {
+    assert.ok(
+      content.includes('cp -r "$REPO_DIR/bin/lib" "$BUILD_CTX/bin/lib"'),
+      "setup.sh must copy bin/lib into the staged build context"
+    );
+  });
+
   it("$1 arg actually sets SANDBOX_NAME in bash", () => {
     const result = execSync(
       'bash -c \'SANDBOX_NAME="${1:-nemoclaw}"; echo "$SANDBOX_NAME"\' -- my-test-box',

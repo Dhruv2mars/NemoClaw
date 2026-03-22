@@ -181,6 +181,8 @@ info "Building and creating NemoClaw sandbox (this takes a few minutes on first 
 # Stage a clean build context (openshell doesn't honor .dockerignore)
 BUILD_CTX="$(mktemp -d)"
 cp "$REPO_DIR/Dockerfile" "$BUILD_CTX/"
+mkdir -p "$BUILD_CTX/bin"
+cp -r "$REPO_DIR/bin/lib" "$BUILD_CTX/bin/lib"
 cp -r "$REPO_DIR/nemoclaw" "$BUILD_CTX/nemoclaw"
 cp -r "$REPO_DIR/nemoclaw-blueprint" "$BUILD_CTX/nemoclaw-blueprint"
 cp -r "$REPO_DIR/scripts" "$BUILD_CTX/scripts"
