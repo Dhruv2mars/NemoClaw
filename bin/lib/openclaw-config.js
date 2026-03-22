@@ -25,7 +25,13 @@ const CURATED_PROVIDER_SLOTS = [
     id: "opencode",
     label: "OpenCode Zen",
     requestedId: "opencode-zen",
-    models: [],
+    models: [
+      { ref: "opencode/big-pickle" },
+      { ref: "opencode/mimo-v2-pro-free" },
+      { ref: "opencode/mimo-v2-omni-free" },
+      { ref: "opencode/nemotron-3-super-free" },
+      { ref: "opencode/minimax-m2.5-free" },
+    ],
   },
   {
     id: "nvidia",
