@@ -19,7 +19,10 @@ const CURATED_PROVIDER_SLOTS = [
   {
     id: "openrouter",
     label: "OpenRouter",
-    models: [],
+    models: [
+      { ref: "openrouter/nvidia/nemotron-3-super-120b-a12b:free" },
+      { ref: "openrouter/minimax/minimax-m2.5:free" },
+    ],
   },
   {
     id: "opencode",
