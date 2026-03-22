@@ -139,28 +139,22 @@ function activeModelEntries(
   if (!onboardCfg?.model) {
     return [
       {
-        id: "nvidia/nemotron-3-super-120b-a12b",
-        label: "Nemotron 3 Super 120B (March 2026)",
-        contextWindow: 131072,
+        id: "qwen-portal/coder-model",
+        label: "Qwen Code",
+        contextWindow: 128000,
         maxOutput: 8192,
       },
       {
-        id: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-        label: "Nemotron Ultra 253B",
-        contextWindow: 131072,
-        maxOutput: 4096,
+        id: "qwen-portal/vision-model",
+        label: "Qwen Vision",
+        contextWindow: 128000,
+        maxOutput: 8192,
       },
       {
-        id: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-        label: "Nemotron Super 49B v1.5",
+        id: "openai-codex/gpt-5.4",
+        label: "GPT-5.4",
         contextWindow: 131072,
-        maxOutput: 4096,
-      },
-      {
-        id: "nvidia/nemotron-3-nano-30b-a3b",
-        label: "Nemotron 3 Nano 30B",
-        contextWindow: 131072,
-        maxOutput: 4096,
+        maxOutput: 8192,
       },
     ];
   }
@@ -248,9 +242,9 @@ export default function register(api: OpenClawPluginApi): void {
   const providerCredentialEnv = onboardCfg?.credentialEnv ?? "NVIDIA_API_KEY";
   api.registerProvider(registeredProviderForConfig(onboardCfg, providerCredentialEnv));
 
-  const bannerEndpoint = onboardCfg ? describeOnboardEndpoint(onboardCfg) : "build.nvidia.com";
-  const bannerProvider = onboardCfg ? describeOnboardProvider(onboardCfg) : "NVIDIA Endpoint API";
-  const bannerModel = onboardCfg?.model ?? "nvidia/nemotron-3-super-120b-a12b";
+  const bannerEndpoint = onboardCfg ? describeOnboardEndpoint(onboardCfg) : "portal.qwen.ai";
+  const bannerProvider = onboardCfg ? describeOnboardProvider(onboardCfg) : "Qwen";
+  const bannerModel = onboardCfg?.model ?? "qwen-portal/coder-model";
 
   api.logger.info("");
   api.logger.info("  ┌─────────────────────────────────────────────────────┐");

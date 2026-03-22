@@ -36,7 +36,18 @@ describe("plugin registration", () => {
   it("registers an inference provider", () => {
     const api = createMockApi();
     register(api);
-    expect(api.registerProvider).toHaveBeenCalledWith(expect.objectContaining({ id: "inference" }));
+    expect(api.registerProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "inference",
+        models: expect.objectContaining({
+          chat: expect.arrayContaining([
+            expect.objectContaining({ id: "qwen-portal/coder-model" }),
+            expect.objectContaining({ id: "qwen-portal/vision-model" }),
+            expect.objectContaining({ id: "openai-codex/gpt-5.4" }),
+          ]),
+        }),
+      }),
+    );
   });
 
   it("does NOT register CLI commands", () => {
