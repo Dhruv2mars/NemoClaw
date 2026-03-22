@@ -22,6 +22,21 @@ describe("OpenClaw sandbox config", () => {
     assert.equal(DEFAULT_OPENCLAW_MODEL, "qwen-portal/coder-model");
   });
 
+  it("includes the requested OpenCode Zen free models", () => {
+    const opencode = CURATED_PROVIDER_SLOTS.find((provider) => provider.id === "opencode");
+    assert.ok(opencode, "expected opencode provider slot");
+    assert.deepEqual(
+      opencode.models.map((model) => model.ref),
+      [
+        "opencode/big-pickle",
+        "opencode/mimo-v2-pro-free",
+        "opencode/mimo-v2-omni-free",
+        "opencode/nemotron-3-super-free",
+        "opencode/minimax-m2.5-free",
+      ],
+    );
+  });
+
   it("builds the sandbox OpenClaw config with curated models and managed inference", () => {
     const config = buildOpenClawConfig({
       managedModel: "nvidia/nemotron-3-super-120b-a12b",
@@ -33,6 +48,11 @@ describe("OpenClaw sandbox config", () => {
     assert.deepEqual(
       Object.keys(config.agents.defaults.models).sort(),
       [
+        "opencode/big-pickle",
+        "opencode/mimo-v2-pro-free",
+        "opencode/mimo-v2-omni-free",
+        "opencode/nemotron-3-super-free",
+        "opencode/minimax-m2.5-free",
         "qwen-portal/coder-model",
         "qwen-portal/vision-model",
         "openai-codex/gpt-5.4",
